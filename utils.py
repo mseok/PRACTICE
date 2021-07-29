@@ -1,7 +1,10 @@
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import pickle
+import random
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -38,9 +41,25 @@ def get_abs_path(path):
 
 
 def generate_dir(path):
-    direc = os.path.dirname(path)
-    if not os.path.exists(direc):
-        os.mkdir(direc)
+    if not os.path.exists(path):
+        os.makedirs(path)
+    return
+
+
+def read_keys(dir, type="test"):
+    type_list = ["train", "val", "test"]
+    assert type in type_list, f"should be one of {type_list}"
+    fn = os.path.join(dir, f"{type}_keys.pkl")
+    with open(fn, "rb") as f:
+        keys = pickle.load(f)
+    return keys
+
+
+def seed_all(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 # CUDA
@@ -57,10 +76,10 @@ def stat_cuda(msg):
     )
 
 
-def check_current_running_device(ngpu):
+def check_current_enable_device():
     from subprocess import Popen, PIPE
 
-    for i in range(ngpu):
+    for i in range(8):
         pipe = Popen(["nvidia-smi", "-i", str(i)], stdout=PIPE)
         pipe = Popen(["grep", "No running"], stdin=pipe.stdout, stdout=PIPE)
         pipe = Popen(
@@ -100,6 +119,14 @@ def init_logger(log_file=None, log_file_level=logging.NOTSET, rotate=False):
 
 
 def log_arguments(logger, args):
-    logger.info("# ARGUMENTS")
+    if logger is None:
+        return
+    logger.info(f"Current Working Directory: {os.getcwd()}")
     for arg, value in sorted(vars(args).items()):
         logger.info(f"{arg}: {value}")
+
+
+def log_msg(logger, msg):
+    if logger is None:
+        return
+    logger.info(msg)

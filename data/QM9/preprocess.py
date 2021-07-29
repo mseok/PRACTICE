@@ -27,6 +27,8 @@ def preprocess(fn):
             mol = Chem.MolFromSmiles(smiles_list[1])
         except Exception:
             mol = Chem.MolFromSmiles(smiles_list[0])
+        if mol is None:
+            return
 
         pickle_fn = fn.split("_")[-1].split(".")[0] + ".pkl"
         with open(os.path.join(PICKLE_PATH, pickle_fn), "wb") as w:
@@ -50,9 +52,6 @@ def mp(fns, func, ncpu=4):
 
 
 def main():
-    fn = "./xyz_files/dsgdb9nsd_122327.xyz"
-    worker(fn)
-    exit()
     NCPU = int(sys.argv[1])
     if not os.path.exists(PICKLE_PATH):
         os.mkdir(PICKLE_PATH)

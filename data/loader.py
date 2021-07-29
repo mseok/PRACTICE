@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader, DistributedSampler
 
 # GLOBAL VARIABLES
-ATOM_SYMBOLS = ["C", "N", "O", "S", "F", "P", "Cl", "Br", "X"]
+ATOM_SYMBOLS = ["H", "C", "N", "O", "S", "F", "P", "Cl", "Br", "X"]
 ATOM_DEGREE = [0, 1, 2, 3, 4, 5]
 ATOM_HYBRIDIZATION = [
     Chem.rdchem.HybridizationType.S,
@@ -20,11 +20,12 @@ ATOM_HYBRIDIZATION = [
     Chem.rdchem.HybridizationType.UNSPECIFIED,
 ]
 ATOM_FORMAL_CHARGE = [-2, -1, 0, 1, 2, 3, 4]
-N_ATOM_FEATURES = (
+N_NODE_FEATURES = (
     len(ATOM_SYMBOLS)
     + len(ATOM_DEGREE)
     + len(ATOM_HYBRIDIZATION)
     + len(ATOM_FORMAL_CHARGE)
+    + 1
 )
 
 BOND_TYPES = [
@@ -42,7 +43,7 @@ BOND_STEREOTYPES = [
     Chem.rdchem.BondStereo.STEREOCIS,
     Chem.rdchem.BondStereo.STEREOTRANS,
 ]
-N_BOND_FEATURES = len(BOND_TYPES) + len(BOND_STEREOTYPES)
+N_EDGE_FEATURES = len(BOND_TYPES) + len(BOND_STEREOTYPES)
 UNIT_CONVERSION = [
     "homo",
     "lumo",
@@ -132,6 +133,7 @@ def one_of_k_encoding_unk(x, allowable_set):
 
 
 def mol_to_sample(mol):
+    mol = Chem.AddHs(mol)
     natoms = mol.GetNumAtoms()
 
     h = get_mol_feature(mol).astype(DTYPE_INT)
@@ -152,17 +154,10 @@ def mol_to_sample(mol):
 class QM9Dataset(Dataset):
     """QM9 dataset."""
 
-    def __init__(
-        self,
-        keys: list,
-        data_dir: str,
-        task: str = "homo",
-        rotate: bool = False,
-    ):
+    def __init__(self, keys: list, data_dir: str, task: str = "homo"):
         self.keys = keys
         self.data_dir = data_dir
         self.task = task
-        self.rotate = rotate
 
     def __len__(self):
         return len(self.keys)
@@ -170,18 +165,18 @@ class QM9Dataset(Dataset):
     def __getitem__(self, idx):
         key = self.keys[idx]
         fn = os.path.join(self.data_dir, key)
-        mol, prop, pos = self._read_pickle(fn=fn, task=self.task)
+        prop, pos, mol = self._read_pickle(fn=fn, task=self.task)
         sample = mol_to_sample(mol)
         sample["pos"] = pos
         sample["y"] = prop
-        sample["key"] = key
+        sample["keys"] = key
         return sample
 
     def _read_pickle(self, fn, task):
         with open(fn, "rb") as f:
             features, pos, mol = pickle.load(f)
         prop = np.array([features[PROPERTIES.index(task)]]).astype(DTYPE)
-        if task in self.UNIT_CONVERSION:
+        if task in UNIT_CONVERSION:
             prop = prop * HARTREE2EV
         return prop, pos, mol
 
@@ -239,36 +234,20 @@ def tensor_collate_fn(batch):
     return ret_dict
 
 
-def get_dataset_dataloader(
-    keys,
-    data_dir,
-    batch_size,
-    num_workers,
-    shuffle,
-    ngpus_per_node,
-    task,
-    rotate,
-):
-    dataset = QM9Dataset(keys, data_dir, task, rotate)
-    if ngpus_per_node > 1:
-        sampler = DistributedSampler(
-            dataset, num_replicas=ngpus_per_node, shuffle=shuffle
-        )
-        dataloader = DataLoader(
-            dataset,
-            batch_size,
-            num_workers=num_workers,
-            pin_memory=True,
-            collate_fn=tensor_collate_fn,
-            shuffle=False,
-            sampler=sampler,
-        )
-    else:
-        dataloader = DataLoader(
-            dataset,
-            batch_size,
-            num_workers=num_workers,
-            collate_fn=tensor_collate_fn,
-            shuffle=shuffle,
-        )
-    return dataset, dataloader
+def get_data(keys, ngpus_per_node, shuffle, FLAGS):
+    dataset = QM9Dataset(keys, FLAGS.data_dir, FLAGS.task)
+    sampler = DistributedSampler(
+        dataset,
+        num_replicas=ngpus_per_node,
+        shuffle=shuffle
+    ) if FLAGS.is_distributed else None
+    loader = DataLoader(
+        dataset,
+        FLAGS.batch_size,
+        num_workers=FLAGS.num_workers,
+        pin_memory=(sampler is not None),
+        collate_fn=tensor_collate_fn,
+        shuffle=shuffle and (sampler is None),
+        sampler=sampler,
+    )
+    return dataset, loader, sampler
