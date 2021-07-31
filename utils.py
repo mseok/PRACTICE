@@ -94,6 +94,17 @@ def check_current_enable_device():
     return i
 
 
+# Debug
+def debug_anomaly(use_anomaly: bool):
+    def anomaly(func):
+        def wrapper(*args, **kwargs):
+            with torch.autograd.set_detect_anomaly(use_anomaly):
+                result = func(*args, **kwargs)
+            return result
+        return wrapper
+    return anomaly
+
+
 # logger
 def init_logger(log_file=None, log_file_level=logging.NOTSET, rotate=False):
     log_format = logging.Formatter("%(message)s")

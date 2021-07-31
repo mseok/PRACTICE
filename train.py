@@ -13,6 +13,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import arguments
 import data.loader as loader
 from models.EGNN import EGNN
+from models.SchNet import SchNet
 import utils
 
 
@@ -31,6 +32,7 @@ class BestModel():
         return
 
 
+@utils.debug_anomaly(False)
 def train(model, data, device, loss_fn, optimizer):
     model.train()
     losses = []
@@ -42,7 +44,7 @@ def train(model, data, device, loss_fn, optimizer):
             break
         sample = utils.dic_to_device(sample, device)
         node_feat, edge_feat, adj, valid, pos, true, keys = sample.values()
-        pred = model(node_feat, pos, valid, adj)
+        pred = model(sample)
         loss = loss_fn(pred, true)
         losses.append(loss.data.cpu().numpy())
 
@@ -66,7 +68,7 @@ def val(model, data, device, loss_fn):
             break
         sample = utils.dic_to_device(sample, device)
         node_feat, edge_feat, adj, valid, pos, true, keys = sample.values()
-        pred = model(node_feat, pos, valid, adj)
+        pred = model(sample)
         loss = loss_fn(pred, true)
         losses.append(loss.data.cpu().numpy())
         i_batch += 1
@@ -108,7 +110,11 @@ def worker(gpu_idx, ngpus_per_node, FLAGS):
     utils.log_msg(logger, f"Val Size: {len(val_dataset)}")
 
     # Model
-    model = EGNN(loader.N_NODE_FEATURES, FLAGS.n_dim, FLAGS.n_layers, infer=False)
+    if FLAGS.model == "egnn":
+        model = EGNN(loader.N_NODE_FEATURES, FLAGS.n_dim, FLAGS.n_layers, False)
+    elif FLAGS.model == "schnet":
+        model = SchNet(loader.N_NODE_FEATURES, FLAGS.n_dim, FLAGS.n_layers,
+                       FLAGS.gamma, FLAGS.n_filters, FLAGS.filter_spacing)
     model = utils.initialize_model(model, gpu_idx, FLAGS.restart_fn)
     # model.cuda(gpu_idx)
     if FLAGS.is_distributed:

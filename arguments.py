@@ -31,10 +31,13 @@ def parser(command):
     parser.add_argument("--log_fn", type=PosixPath)
 
     # Model
-    parser.add_argument("--model", type=str, choices=["egnn"])
+    parser.add_argument("--model", type=str, choices=["egnn", "schnet"])
     parser.add_argument("--n_dim", type=int)
     parser.add_argument("--n_layers", type=int)
     parser.add_argument("--task", type=str, choices=loader.PROPERTIES)
+    parser.add_argument("--gamma", type=float)
+    parser.add_argument("--n_filters", type=int)
+    parser.add_argument("--filter_spacing", type=float)
 
     # Main
     parser.add_argument("--batch_size", type=int)

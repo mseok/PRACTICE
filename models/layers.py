@@ -19,8 +19,8 @@ class EGCL(nn.Module):
         valid:        Valid indices            [B,]
 
     Output:
-        pos:        New atom position        [B,N,3]
-        node_feat:  New atom feature         [B,N,3]
+        node_feat:  New atom feature           [B,N,NF]
+        pos:        New atom position          [B,N,3]
     """
 
     def __init__(self, n_node_feat, hidden_dim, infer=False, update_pos=False):
@@ -63,14 +63,16 @@ class EGCL(nn.Module):
         m_ij = self.edge_linear(edge_input)
         vec = self._normalize(vec)
         if self.update_pos:
+            # Used mean to avoid explosion (paper used sum)
             pos += (vec * self.coordinate_linear(m_ij) * _valid).mean(2)
         if self.infer:
             e_ij = self.inference_linear(m_ij)
             m_ij = (m_ij * e_ij)
+        # Used mean to avoid explosion (paper used sum)
         message = (m_ij * _valid).mean(2)
         node_input = torch.cat([node_feat, message], dim=-1)
         node_feat += self.node_linear(node_input)
-        return pos, node_feat
+        return node_feat, pos
 
     def _compute_vec_from_pos(self, pos):
         return pos.unsqueeze(2) - pos.unsqueeze(1)
@@ -79,3 +81,85 @@ class EGCL(nn.Module):
         norm = vec.norm(dim=-1, keepdim=True)
         normalized = vec / norm.clamp(min=1e-10)
         return normalized
+
+
+class InteractionLayer(nn.Module):
+    r"""\
+    Interaction layer from SchNet
+    Contains continuous filter convolutional layer (CFConv)
+    \bold x^{l+1}_i=(X^l *W^l)_i=\sum^{n_{atoms}}_{j=0}\bold x^l_j
+    \circ W^l(\bold r_j - \bold r_i)
+
+    Input:
+        node_feat:    Atom feature             [B,N,NF]
+        pos:          Atom position            [B,N,3]
+        valid:        Valid indices            [B,]
+
+    Output:
+        node_feat:  New atom feature           [B,N,NF]
+    """
+
+    def __init__(self, in_dim, hidden_dim, out_dim, gamma, n_filters,
+                 filter_spacing):
+        super().__init__()
+        self.filter_linear1 = nn.Linear(3, hidden_dim, bias=False)
+        self.filter_linear2 = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.atomwise_linear1 = nn.Linear(in_dim, hidden_dim, bias=False)
+        self.atomwise_linear2 = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.atomwise_linear3 = nn.Linear(hidden_dim, out_dim, bias=False)
+        self.act = SSP(a=0.5, b=0.5)
+        self.gamma = gamma
+        self.n_filters = n_filters
+        self.filter_spacing = filter_spacing
+
+    def forward(self, node_feat, pos, valid):
+        _node_feat = self.atomwise_linear1(node_feat)
+        _node_feat = self._cfconv(_node_feat, pos)
+        _node_feat = self.atomwise_linear2(_node_feat)
+        _node_feat = self.act(_node_feat)
+        _node_feat = self.atomwise_linear3(_node_feat)
+        node_feat = node_feat + _node_feat * valid.unsqueeze(-1)
+        return node_feat
+
+    def _compute_vec_from_pos(self, pos):
+        return pos.unsqueeze(2) - pos.unsqueeze(1)
+
+    def _cfconv(self, node_feat, pos):
+        vec = self._compute_vec_from_pos(pos)
+        filters = self._generate_filter_layers(vec)          # B,N,N,F,3
+        _node_feat = node_feat.unsqueeze(2).unsqueeze(2)     # B,N,1,1,NF
+        _node_feat = (_node_feat * filters).sum(2).sum(2)    # B,N,NF
+        return _node_feat
+
+    def _generate_filter_layers(self, vec):
+        r"""\
+        radial basis function
+        e_k(\bold r_j - \bold r_i) = \exp(-\gamma ||d_{ij} - \mu_k||^2)
+        """
+        filter_centers = torch.Tensor(
+            [self.filter_spacing * i for i in range(self.n_filters)]
+        )
+        filter_centers = filter_centers.to(vec.device)
+        vec = vec.unsqueeze(-2)
+        filter_centers = filter_centers.unsqueeze(0).unsqueeze(0).unsqueeze(-1)
+        filters = torch.pow(vec - filter_centers, 2)
+        filters = torch.exp(-self.gamma * filters)
+        filters = self.filter_linear1(filters)               # B,N,N,F,NF
+        filters = self.act(filters)
+        filters = self.filter_linear2(filters)
+        filters = self.act(filters)
+        return filters
+
+
+class SSP(nn.Module):
+    r"""\
+    Shifted SoftPlus
+    ssp(x) = \ln (a*e^x + b)
+    """
+    def __init__(self, a=0.5, b=0.5):
+        super().__init__()
+        self.a = a
+        self.b = b
+
+    def forward(self, inp):
+        return torch.log(self.a * torch.exp(inp) + self.b)
