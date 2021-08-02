@@ -63,13 +63,13 @@ class EGCL(nn.Module):
         m_ij = self.edge_linear(edge_input)
         vec = self._normalize(vec)
         if self.update_pos:
-            # Used mean to avoid explosion (paper used sum)
-            pos += (vec * self.coordinate_linear(m_ij) * _valid).mean(2)
+            C = 1 / (valid.sum(-1) - 1)
+            C = C.unsqueeze(-1).unsqueeze(-1)
+            pos += C * (vec * self.coordinate_linear(m_ij) * _valid).sum(2)
         if self.infer:
             e_ij = self.inference_linear(m_ij)
             m_ij = (m_ij * e_ij)
-        # Used mean to avoid explosion (paper used sum)
-        message = (m_ij * _valid).mean(2)
+        message = (m_ij * adj).sum(2)
         node_input = torch.cat([node_feat, message], dim=-1)
         node_feat += self.node_linear(node_input)
         return node_feat, pos
