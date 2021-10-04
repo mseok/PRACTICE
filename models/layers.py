@@ -54,7 +54,9 @@ class EGCL(nn.Module):
         hi = node_feat.unsqueeze(2).repeat_interleave(n_atoms, 2)
         hj = node_feat.unsqueeze(1).repeat_interleave(n_atoms, 1)
         vec = self._compute_vec_from_pos(pos)
-        _valid = valid.unsqueeze(-1).unsqueeze(-1).repeat_interleave(n_atoms, 2)
+        _valid1 = valid.unsqueeze(2).repeat_interleave(n_atoms, 2)
+        _valid2 = valid.unsqueeze(1).repeat_interleave(n_atoms, 1)
+        _valid = (_valid1 * _valid2).unsqueeze(-1)
         dist = torch.pow(vec, 2).sum(dim=-1, keepdim=True)
         if len(adj.shape) == 3:
             adj = adj.unsqueeze(-1)
@@ -102,7 +104,7 @@ class InteractionLayer(nn.Module):
     def __init__(self, in_dim, hidden_dim, out_dim, gamma, n_filters,
                  filter_spacing):
         super().__init__()
-        self.filter_linear1 = nn.Linear(3, hidden_dim, bias=False)
+        self.filter_linear1 = nn.Linear(n_filters, hidden_dim, bias=False)
         self.filter_linear2 = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.atomwise_linear1 = nn.Linear(in_dim, hidden_dim, bias=False)
         self.atomwise_linear2 = nn.Linear(hidden_dim, hidden_dim, bias=False)
@@ -126,12 +128,13 @@ class InteractionLayer(nn.Module):
 
     def _cfconv(self, node_feat, pos):
         vec = self._compute_vec_from_pos(pos)
-        filters = self._generate_filter_layers(vec)          # B,N,N,F,3
-        _node_feat = node_feat.unsqueeze(2).unsqueeze(2)     # B,N,1,1,NF
-        _node_feat = (_node_feat * filters).sum(2).sum(2)    # B,N,NF
+        dist = torch.sqrt(torch.pow(vec, 2).sum(-1))         # B,N,N
+        filters = self._generate_filter_layers(dist)         # B,N,N,NF
+        _node_feat = node_feat.unsqueeze(2)                  # B,N,1,NF
+        _node_feat = (_node_feat * filters).sum(2)           # B,N,NF
         return _node_feat
 
-    def _generate_filter_layers(self, vec):
+    def _generate_filter_layers(self, dist):
         r"""\
         radial basis function
         e_k(\bold r_j - \bold r_i) = \exp(-\gamma ||d_{ij} - \mu_k||^2)
@@ -139,12 +142,12 @@ class InteractionLayer(nn.Module):
         filter_centers = torch.Tensor(
             [self.filter_spacing * i for i in range(self.n_filters)]
         )
-        filter_centers = filter_centers.to(vec.device)
-        vec = vec.unsqueeze(-2)
-        filter_centers = filter_centers.unsqueeze(0).unsqueeze(0).unsqueeze(-1)
-        filters = torch.pow(vec - filter_centers, 2)
+        filter_centers = filter_centers.to(dist.device)
+        dist = dist.unsqueeze(-1).repeat_interleave(filter_centers.shape[0], -1)
+        filter_centers = filter_centers.unsqueeze(0).unsqueeze(0).unsqueeze(0)
+        filters = torch.pow(dist - filter_centers, 2)
         filters = torch.exp(-self.gamma * filters)
-        filters = self.filter_linear1(filters)               # B,N,N,F,NF
+        filters = self.filter_linear1(filters)               # B,N,N,NF
         filters = self.act(filters)
         filters = self.filter_linear2(filters)
         filters = self.act(filters)
